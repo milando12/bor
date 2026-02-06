@@ -1079,23 +1079,12 @@ func (c *Bor) Finalize(chain consensus.ChainHeaderReader, header *types.Header, 
 		start := time.Now()
 		cx := statefull.ChainContext{Chain: chain, Bor: c}
 
-		// Start tracing StateSyncTx (if present in the block body)
-		var stateSyncTx *types.Transaction
+		// Detect StateSyncTx (tracing is now handled per-event inside ApplyMessage)
 		if c.config.IsMadhugiri(header.Number) && len(body.Transactions) > 0 {
 			lastTx := body.Transactions[len(body.Transactions)-1]
 			if lastTx.Type() == types.StateSyncTxType {
-				stateSyncTx = lastTx
 				hasTracer := vmCfg.Tracer != nil
 				log.Info("[DEBUG] StateSyncTx found in Finalize", "block", headerNumber, "txHash", lastTx.Hash().Hex(), "hasTracer", hasTracer)
-				if hooks := vmCfg.Tracer; hooks != nil && hooks.OnTxStart != nil {
-					// todo(milando12): check how much overhead this adds, if it does we can initialize it earlier and pass down to ApplyMessage()
-					vmenv := vm.NewEVM(
-						core.NewEVMBlockContext(header, cx, &header.Coinbase),
-						wrappedState, c.chainConfig, vmCfg,
-					)
-					log.Info("[DEBUG] StateSyncTx OnTxStart", "block", headerNumber, "txHash", stateSyncTx.Hash().Hex())
-					hooks.OnTxStart(vmenv.GetVMContext(), stateSyncTx, statefull.SystemAddress)
-				}
 			}
 		}
 
@@ -1135,7 +1124,7 @@ func (c *Bor) Finalize(chain consensus.ChainHeaderReader, header *types.Header, 
 		if len(body.Transactions) > 0 {
 			lastTx := body.Transactions[len(body.Transactions)-1]
 			if lastTx.Type() == types.StateSyncTxType {
-				receipts = insertStateSyncTransactionAndCalculateReceipt(lastTx, header, body, wrappedState, receipts, vmCfg)
+				receipts = insertStateSyncTransactionAndCalculateReceipt(lastTx, header, body, wrappedState, receipts)
 			}
 		}
 	} else {
@@ -1146,7 +1135,7 @@ func (c *Bor) Finalize(chain consensus.ChainHeaderReader, header *types.Header, 
 	return receipts
 }
 
-func insertStateSyncTransactionAndCalculateReceipt(stateSyncTx *types.Transaction, header *types.Header, body *types.Body, state vm.StateDB, receipts []*types.Receipt, vmConfig vm.Config) []*types.Receipt {
+func insertStateSyncTransactionAndCalculateReceipt(stateSyncTx *types.Transaction, header *types.Header, body *types.Body, state vm.StateDB, receipts []*types.Receipt) []*types.Receipt {
 	allLogs := state.Logs()
 	sort.SliceStable(allLogs, func(i, j int) bool {
 		return allLogs[i].Index < allLogs[j].Index
@@ -1180,11 +1169,7 @@ func insertStateSyncTransactionAndCalculateReceipt(stateSyncTx *types.Transactio
 
 	stateSyncReceipt.Bloom = types.CreateBloom(stateSyncReceipt)
 
-	// End tracing for StateSyncTx
-	if hooks := vmConfig.Tracer; hooks != nil && hooks.OnTxEnd != nil {
-		log.Info("[DEBUG] StateSyncTx OnTxEnd", "block", header.Number, "txHash", stateSyncTx.Hash().Hex(), "logCount", len(stateSyncLogs), "status", stateSyncReceipt.Status)
-		hooks.OnTxEnd(stateSyncReceipt, nil)
-	}
+	log.Info("[DEBUG] StateSyncTx insertStateSyncTransactionAndCalculateReceipt end", "block", header.Number, "txHash", stateSyncTx.Hash().Hex(), "logCount", len(stateSyncLogs), "status", stateSyncReceipt.Status)
 
 	receipts = append(receipts, stateSyncReceipt)
 
@@ -1291,7 +1276,7 @@ func (c *Bor) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header *typ
 			StateSyncData: stateSyncData,
 		})
 		body.Transactions = append(body.Transactions, stateSyncTx)
-		receipts = insertStateSyncTransactionAndCalculateReceipt(stateSyncTx, header, body, state, receipts, vmCfg)
+		receipts = insertStateSyncTransactionAndCalculateReceipt(stateSyncTx, header, body, state, receipts)
 	} else {
 		// set state sync
 		bc := chain.(core.BorStateSyncer)

@@ -11,6 +11,7 @@ import (
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/holiman/uint256"
@@ -74,6 +75,7 @@ func ApplyMessage(
 	vmConfig vm.Config,
 ) (uint64, error) {
 	initialGas := msg.Gas()
+	tracer := vmConfig.Tracer
 
 	// Create a new context to be used in the EVM environment
 	blockContext := core.NewEVMBlockContext(header, chainContext, &header.Coinbase)
@@ -81,6 +83,25 @@ func ApplyMessage(
 	// Create a new environment which holds all relevant information
 	// about the transaction and calling mechanisms.
 	vmenv := vm.NewEVM(blockContext, state, chainConfig, vmConfig)
+
+	// Per-event tracing: create a synthetic tx and fire OnTxStart before execution
+	var tx *types.Transaction
+	if tracer != nil {
+		tx = types.NewTx(&types.LegacyTx{
+			Nonce:    msg.Nonce(),
+			GasPrice: msg.GasPrice(),
+			Gas:      msg.Gas(),
+			To:       msg.To(),
+			Value:    msg.Value(),
+			Data:     msg.Data(),
+		})
+
+		if tracer.OnTxStart != nil {
+			log.Info("[DEBUG] ApplyMessage OnTxStart", "block", header.Number, "txHash", tx.Hash().Hex(), "to", msg.To())
+			tracer.OnTxStart(vmenv.GetVMContext(), tx, msg.From())
+		}
+		state.Inner().SetTxContext(tx.Hash(), 0)
+	}
 
 	// nolint : contextcheck
 	// Apply the transaction to the current state (included in the env)
@@ -114,6 +135,27 @@ func ApplyMessage(
 	}
 
 	gasUsed := initialGas - gasLeft
+
+	// Per-event tracing: fire OnTxEnd with a receipt after execution
+	if tracer != nil && tracer.OnTxEnd != nil {
+		blockHash := header.Hash()
+
+		receipt := types.NewReceipt(nil, err != nil, gasUsed)
+		receipt.TxHash = tx.Hash()
+		receipt.GasUsed = gasUsed
+
+		if msg.To() == nil {
+			receipt.ContractAddress = crypto.CreateAddress(vmenv.TxContext.Origin, tx.Nonce())
+		}
+
+		receipt.Logs = state.Inner().GetLogs(tx.Hash(), header.Number.Uint64(), blockHash, header.Time)
+		receipt.Bloom = types.CreateBloom(receipt)
+		receipt.BlockHash = blockHash
+		receipt.BlockNumber = header.Number
+		receipt.TransactionIndex = 0
+		log.Info("[DEBUG] ApplyMessage OnTxEnd", "block", header.Number, "txHash", tx.Hash().Hex(), "gasUsed", gasUsed, "logCount", len(receipt.Logs), "status", receipt.Status)
+		tracer.OnTxEnd(receipt, nil)
+	}
 
 	return gasUsed, nil
 }

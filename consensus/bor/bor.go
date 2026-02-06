@@ -1069,6 +1069,10 @@ func (c *Bor) Finalize(chain consensus.ChainHeaderReader, header *types.Header, 
 
 	if bc, ok := chain.(*core.BlockChain); ok {
 		vmCfg = *bc.GetVMConfig()
+	} else if hc, ok := chain.(*core.HeaderChain); ok {
+		if cfg := hc.GetVMConfig(); cfg != nil {
+			vmCfg = *cfg
+		}
 	}
 
 	if IsSprintStart(headerNumber, c.config.CalculateSprint(headerNumber)) {
@@ -1082,14 +1086,14 @@ func (c *Bor) Finalize(chain consensus.ChainHeaderReader, header *types.Header, 
 			if lastTx.Type() == types.StateSyncTxType {
 				stateSyncTx = lastTx
 				hasTracer := vmCfg.Tracer != nil
-				log.Info("[DEBUG] StateSyncTx found in Finalize", "block", headerNumber, "txHash", lastTx.Hash(), "hasTracer", hasTracer)
+				log.Info("[DEBUG] StateSyncTx found in Finalize", "block", headerNumber, "txHash", lastTx.Hash().Hex(), "hasTracer", hasTracer)
 				if hooks := vmCfg.Tracer; hooks != nil && hooks.OnTxStart != nil {
 					// todo(milando12): check how much overhead this adds, if it does we can initialize it earlier and pass down to ApplyMessage()
 					vmenv := vm.NewEVM(
 						core.NewEVMBlockContext(header, cx, &header.Coinbase),
 						wrappedState, c.chainConfig, vmCfg,
 					)
-					log.Info("[DEBUG] StateSyncTx OnTxStart", "block", headerNumber, "txHash", stateSyncTx.Hash())
+					log.Info("[DEBUG] StateSyncTx OnTxStart", "block", headerNumber, "txHash", stateSyncTx.Hash().Hex())
 					hooks.OnTxStart(vmenv.GetVMContext(), stateSyncTx, statefull.SystemAddress)
 				}
 			}
@@ -1178,7 +1182,7 @@ func insertStateSyncTransactionAndCalculateReceipt(stateSyncTx *types.Transactio
 
 	// End tracing for StateSyncTx
 	if hooks := vmConfig.Tracer; hooks != nil && hooks.OnTxEnd != nil {
-		log.Info("[DEBUG] StateSyncTx OnTxEnd", "block", header.Number, "txHash", stateSyncTx.Hash(), "logCount", len(stateSyncLogs), "status", stateSyncReceipt.Status)
+		log.Info("[DEBUG] StateSyncTx OnTxEnd", "block", header.Number, "txHash", stateSyncTx.Hash().Hex(), "logCount", len(stateSyncLogs), "status", stateSyncReceipt.Status)
 		hooks.OnTxEnd(stateSyncReceipt, nil)
 	}
 
@@ -1244,6 +1248,10 @@ func (c *Bor) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header *typ
 
 	if bc, ok := chain.(*core.BlockChain); ok {
 		vmCfg = *bc.GetVMConfig()
+	} else if hc, ok := chain.(*core.HeaderChain); ok {
+		if cfg := hc.GetVMConfig(); cfg != nil {
+			vmCfg = *cfg
+		}
 	}
 
 	if IsSprintStart(headerNumber, c.config.CalculateSprint(headerNumber)) {

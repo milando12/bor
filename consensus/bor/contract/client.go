@@ -2,6 +2,7 @@ package contract
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"math/big"
 	"strings"
@@ -96,6 +97,12 @@ func (gc *GenesisContractsClient) CommitState(
 	msg := statefull.GetSystemMessage(common.HexToAddress(gc.StateReceiverContract), data)
 
 	log.Info("→ committing new state", "eventRecord", event.ID)
+	log.Info("[DEBUG-TRACE] CommitState: before ApplyMessage",
+		"eventID", event.ID,
+		"stateReceiver", gc.StateReceiverContract,
+		"vmCfgTracerNil", vmCfg.Tracer == nil,
+		"vmCfgTracerPtr", fmt.Sprintf("%p", vmCfg.Tracer),
+		"stateType", fmt.Sprintf("%T", state))
 
 	gasUsed, err := statefull.ApplyMessage(context.Background(), msg, state, header, gc.chainConfig, chCtx, vmCfg)
 

@@ -293,6 +293,11 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 			return nil, fmt.Errorf("failed to create tracer %s: %v", config.VMTrace, err)
 		}
 		options.VmConfig.Tracer = t
+		log.Info("[DEBUG-TRACE] eth/backend: live tracer created",
+			"vmTrace", config.VMTrace,
+			"tracerPtr", fmt.Sprintf("%p", t),
+			"optionsPtr", fmt.Sprintf("%p", options),
+			"vmConfigTracerPtr", fmt.Sprintf("%p", options.VmConfig.Tracer))
 	}
 
 	checker := whitelist.NewService(chainDb, config.DisableBlindForkValidation, config.MaxBlindForkValidationLimit)

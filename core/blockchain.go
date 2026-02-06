@@ -453,6 +453,12 @@ func NewBlockChain(db ethdb.Database, genesis *Genesis, engine consensus.Engine,
 		return nil, err
 	}
 	bc.hc.vmConfig = &bc.cfg.VmConfig
+	log.Info("[DEBUG-TRACE] blockchain: vmConfig propagated to HeaderChain",
+		"bcCfgPtr", fmt.Sprintf("%p", bc.cfg),
+		"bcCfgVmConfigPtr", fmt.Sprintf("%p", &bc.cfg.VmConfig),
+		"hcVmConfigPtr", fmt.Sprintf("%p", bc.hc.vmConfig),
+		"tracerNil", bc.cfg.VmConfig.Tracer == nil,
+		"tracerPtr", fmt.Sprintf("%p", bc.cfg.VmConfig.Tracer))
 	bc.flushInterval.Store(int64(cfg.TrieTimeLimit))
 	bc.forker = NewForkChoice(bc, cfg.ShouldPreserve, cfg.Checker)
 
@@ -761,6 +767,9 @@ func (bc *BlockChain) ProcessBlock(block *types.Block, parent *types.Header, wit
 
 	if bc.parallelProcessor != nil {
 		processorCount++
+		log.Info("[DEBUG-TRACE] blockchain: calling parallel Process",
+			"block", block.NumberU64(),
+			"vmConfigTracerNil", bc.cfg.VmConfig.Tracer == nil)
 
 		go func() {
 			pstart := time.Now()
@@ -781,6 +790,12 @@ func (bc *BlockChain) ProcessBlock(block *types.Block, parent *types.Header, wit
 
 	if bc.processor != nil && !bc.enforceParallelProcessor {
 		processorCount++
+		log.Info("[DEBUG-TRACE] blockchain: calling serial Process",
+			"block", block.NumberU64(),
+			"vmConfigTracerNil", bc.cfg.VmConfig.Tracer == nil,
+			"vmConfigTracerPtr", fmt.Sprintf("%p", bc.cfg.VmConfig.Tracer),
+			"hcVmConfigPtr", fmt.Sprintf("%p", bc.hc.vmConfig),
+			"hcVmConfigTracerNil", bc.hc.vmConfig == nil || bc.hc.vmConfig.Tracer == nil)
 
 		go func() {
 			pstart := time.Now()

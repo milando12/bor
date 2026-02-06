@@ -3,6 +3,7 @@ package statefull
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"math/big"
 
 	"github.com/ethereum/go-ethereum"
@@ -75,6 +76,15 @@ func ApplyMessage(
 ) (uint64, error) {
 	initialGas := msg.Gas()
 
+	log.Info("[DEBUG-TRACE] ApplyMessage: entry",
+		"block", header.Number,
+		"from", msg.From().Hex(),
+		"to", msg.To().Hex(),
+		"gas", initialGas,
+		"vmConfigTracerNil", vmConfig.Tracer == nil,
+		"vmConfigTracerPtr", fmt.Sprintf("%p", vmConfig.Tracer),
+		"stateType", fmt.Sprintf("%T", state))
+
 	// Create a new context to be used in the EVM environment
 	blockContext := core.NewEVMBlockContext(header, chainContext, &header.Coinbase)
 
@@ -92,6 +102,13 @@ func ApplyMessage(
 		uint256.NewInt(msg.Value().Uint64()),
 		nil,
 	)
+
+	log.Info("[DEBUG-TRACE] ApplyMessage: call completed",
+		"block", header.Number,
+		"gasUsed", initialGas-gasLeft,
+		"err", err,
+		"stateLogsCount", len(state.Logs()),
+		"couldTraceHere", "yes - have gas, logs, and EVM context for OnTxStart/OnTxEnd")
 
 	success := big.NewInt(5).SetBytes(ret)
 

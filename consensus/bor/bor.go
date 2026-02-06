@@ -1069,10 +1069,28 @@ func (c *Bor) Finalize(chain consensus.ChainHeaderReader, header *types.Header, 
 
 	if bc, ok := chain.(*core.BlockChain); ok {
 		vmCfg = *bc.GetVMConfig()
+		log.Info("[DEBUG-TRACE] Finalize: got vmConfig from BlockChain",
+			"block", headerNumber,
+			"tracerNil", vmCfg.Tracer == nil,
+			"vmConfigPtr", fmt.Sprintf("%p", bc.GetVMConfig()),
+			"tracerPtr", fmt.Sprintf("%p", vmCfg.Tracer))
 	} else if hc, ok := chain.(*core.HeaderChain); ok {
-		if cfg := hc.GetVMConfig(); cfg != nil {
+		cfg := hc.GetVMConfig()
+		log.Info("[DEBUG-TRACE] Finalize: got vmConfig from HeaderChain",
+			"block", headerNumber,
+			"cfgNil", cfg == nil,
+			"cfgPtr", fmt.Sprintf("%p", cfg))
+		if cfg != nil {
 			vmCfg = *cfg
+			log.Info("[DEBUG-TRACE] Finalize: HeaderChain vmConfig details",
+				"block", headerNumber,
+				"tracerNil", vmCfg.Tracer == nil,
+				"tracerPtr", fmt.Sprintf("%p", vmCfg.Tracer))
 		}
+	} else {
+		log.Info("[DEBUG-TRACE] Finalize: chain is NEITHER BlockChain nor HeaderChain",
+			"block", headerNumber,
+			"chainType", fmt.Sprintf("%T", chain))
 	}
 
 	if IsSprintStart(headerNumber, c.config.CalculateSprint(headerNumber)) {

@@ -1069,14 +1069,40 @@ func (c *Bor) Finalize(chain consensus.ChainHeaderReader, header *types.Header, 
 	var (
 		stateSyncData []*types.StateSyncData
 		err           error
+		vmCfg         vm.Config
 	)
+
+	if bc, ok := chain.(*core.BlockChain); ok {
+		vmCfg = *bc.GetVMConfig()
+	}
 
 	if IsSprintStart(headerNumber, c.config.CalculateSprint(headerNumber)) {
 		start := time.Now()
 		cx := statefull.ChainContext{Chain: chain, Bor: c}
+
+		// Start tracing StateSyncTx (if present in the block body)
+		var stateSyncTx *types.Transaction
+		if c.config.IsMadhugiri(header.Number) && len(body.Transactions) > 0 {
+			lastTx := body.Transactions[len(body.Transactions)-1]
+			if lastTx.Type() == types.StateSyncTxType {
+				stateSyncTx = lastTx
+				hasTracer := vmCfg.Tracer != nil
+				log.Info("[DEBUG] StateSyncTx found in Finalize", "block", headerNumber, "txHash", lastTx.Hash(), "hasTracer", hasTracer)
+				if hooks := vmCfg.Tracer; hooks != nil && hooks.OnTxStart != nil {
+					// todo(milando12): check how much overhead this adds, if it does we can initialize it earlier and pass down to ApplyMessage()
+					vmenv := vm.NewEVM(
+						core.NewEVMBlockContext(header, cx, &header.Coinbase),
+						wrappedState, c.chainConfig, vmCfg,
+					)
+					log.Info("[DEBUG] StateSyncTx OnTxStart", "block", headerNumber, "txHash", stateSyncTx.Hash())
+					hooks.OnTxStart(vmenv.GetVMContext(), stateSyncTx, statefull.SystemAddress)
+				}
+			}
+		}
+
 		// check and commit span
 		if !c.config.IsRio(header.Number) {
-			if err := c.checkAndCommitSpan(wrappedState, header, cx); err != nil {
+			if err := c.checkAndCommitSpan(wrappedState, header, cx, vmCfg); err != nil {
 				log.Error("Error while committing span", "error", err)
 				return nil
 			}
@@ -1084,10 +1110,13 @@ func (c *Bor) Finalize(chain consensus.ChainHeaderReader, header *types.Header, 
 
 		if c.HeimdallClient != nil {
 			// commit states
-			stateSyncData, err = c.CommitStates(wrappedState, header, cx)
+			stateSyncData, err = c.CommitStates(wrappedState, header, cx, vmCfg)
 			if err != nil {
 				log.Error("Error while committing states", "error", err)
 				return nil
+			}
+			if len(stateSyncData) > 0 {
+				log.Info("[DEBUG] StateSyncTx CommitStates completed", "block", headerNumber, "eventCount", len(stateSyncData))
 			}
 		}
 		// Get the underlying state for updating consensus time
@@ -1107,7 +1136,7 @@ func (c *Bor) Finalize(chain consensus.ChainHeaderReader, header *types.Header, 
 		if len(body.Transactions) > 0 {
 			lastTx := body.Transactions[len(body.Transactions)-1]
 			if lastTx.Type() == types.StateSyncTxType {
-				receipts = insertStateSyncTransactionAndCalculateReceipt(lastTx, header, body, wrappedState, receipts)
+				receipts = insertStateSyncTransactionAndCalculateReceipt(lastTx, header, body, wrappedState, receipts, vmCfg)
 			}
 		}
 	} else {
@@ -1118,7 +1147,7 @@ func (c *Bor) Finalize(chain consensus.ChainHeaderReader, header *types.Header, 
 	return receipts
 }
 
-func insertStateSyncTransactionAndCalculateReceipt(stateSyncTx *types.Transaction, header *types.Header, body *types.Body, state vm.StateDB, receipts []*types.Receipt) []*types.Receipt {
+func insertStateSyncTransactionAndCalculateReceipt(stateSyncTx *types.Transaction, header *types.Header, body *types.Body, state vm.StateDB, receipts []*types.Receipt, vmConfig vm.Config) []*types.Receipt {
 	allLogs := state.Logs()
 	sort.SliceStable(allLogs, func(i, j int) bool {
 		return allLogs[i].Index < allLogs[j].Index
@@ -1151,6 +1180,13 @@ func insertStateSyncTransactionAndCalculateReceipt(stateSyncTx *types.Transactio
 	}
 
 	stateSyncReceipt.Bloom = types.CreateBloom(stateSyncReceipt)
+
+	// End tracing for StateSyncTx
+	if hooks := vmConfig.Tracer; hooks != nil && hooks.OnTxEnd != nil {
+		log.Info("[DEBUG] StateSyncTx OnTxEnd", "block", header.Number, "txHash", stateSyncTx.Hash(), "logCount", len(stateSyncLogs), "status", stateSyncReceipt.Status)
+		hooks.OnTxEnd(stateSyncReceipt, nil)
+	}
+
 	receipts = append(receipts, stateSyncReceipt)
 
 	return receipts
@@ -1208,14 +1244,19 @@ func (c *Bor) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header *typ
 	var (
 		stateSyncData []*types.StateSyncData
 		err           error
+		vmCfg         vm.Config
 	)
+
+	if bc, ok := chain.(*core.BlockChain); ok {
+		vmCfg = *bc.GetVMConfig()
+	}
 
 	if IsSprintStart(headerNumber, c.config.CalculateSprint(headerNumber)) {
 		cx := statefull.ChainContext{Chain: chain, Bor: c}
 
 		// check and commit span
 		if !c.config.IsRio(header.Number) {
-			if err = c.checkAndCommitSpan(state, header, cx); err != nil {
+			if err = c.checkAndCommitSpan(state, header, cx, vmCfg); err != nil {
 				log.Error("Error while committing span", "error", err)
 				return nil, nil, err
 			}
@@ -1223,7 +1264,7 @@ func (c *Bor) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header *typ
 
 		if c.HeimdallClient != nil {
 			// commit states
-			stateSyncData, err = c.CommitStates(state, header, cx)
+			stateSyncData, err = c.CommitStates(state, header, cx, vmCfg)
 			if err != nil {
 				log.Error("Error while committing states", "error", err)
 				return nil, nil, err
@@ -1247,7 +1288,7 @@ func (c *Bor) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header *typ
 			StateSyncData: stateSyncData,
 		})
 		body.Transactions = append(body.Transactions, stateSyncTx)
-		receipts = insertStateSyncTransactionAndCalculateReceipt(stateSyncTx, header, body, state, receipts)
+		receipts = insertStateSyncTransactionAndCalculateReceipt(stateSyncTx, header, body, state, receipts, vmCfg)
 	} else {
 		// set state sync
 		bc := chain.(core.BorStateSyncer)
@@ -1452,6 +1493,7 @@ func (c *Bor) checkAndCommitSpan(
 	state vm.StateDB,
 	header *types.Header,
 	chain core.ChainContext,
+	vmCfg vm.Config,
 ) error {
 	var ctx = context.Background()
 	headerNumber := header.Number.Uint64()
@@ -1468,7 +1510,7 @@ func (c *Bor) checkAndCommitSpan(
 	tempState.IntermediateRoot(false)
 
 	if c.needToCommitSpan(span, headerNumber) {
-		return c.FetchAndCommitSpan(ctx, span.Id+1, state, header, chain)
+		return c.FetchAndCommitSpan(ctx, span.Id+1, state, header, chain, vmCfg)
 	}
 
 	return nil
@@ -1507,6 +1549,7 @@ func (c *Bor) FetchAndCommitSpan(
 	state vm.StateDB,
 	header *types.Header,
 	chain core.ChainContext,
+	vmCfg vm.Config,
 ) error {
 	var (
 		minSpan    borTypes.Span
@@ -1570,7 +1613,7 @@ func (c *Bor) FetchAndCommitSpan(
 		)
 	}
 
-	return c.spanner.CommitSpan(ctx, minSpan, validators, producers, state, header, chain)
+	return c.spanner.CommitSpan(ctx, minSpan, validators, producers, state, header, chain, vmCfg)
 }
 
 // CommitStates commit states
@@ -1578,6 +1621,7 @@ func (c *Bor) CommitStates(
 	state vm.StateDB,
 	header *types.Header,
 	chain statefull.ChainContext,
+	vmCfg vm.Config,
 ) ([]*types.StateSyncData, error) {
 	fetchStart := time.Now()
 	number := header.Number.Uint64()
@@ -1691,7 +1735,7 @@ func (c *Bor) CommitStates(
 		// we expect that this call MUST emit an event, otherwise we wouldn't make a receipt
 		// if the receiver address is not a contract then we'll skip the most of the execution and emitting an event as well
 		// https://github.com/0xPolygon/genesis-contracts/blob/master/contracts/StateReceiver.sol#L27
-		gasUsed, err = c.GenesisContractsClient.CommitState(eventRecord, state, header, chain)
+		gasUsed, err = c.GenesisContractsClient.CommitState(eventRecord, state, header, chain, vmCfg)
 		if err != nil {
 			return nil, err
 		}

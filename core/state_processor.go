@@ -31,7 +31,6 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 )
 
@@ -87,20 +86,10 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 	)
 
 	// Apply pre-execution system calls.
-	log.Info("[DEBUG-TRACE] state_processor.Process: entry",
-		"block", block.NumberU64(),
-		"cfgTracerNil", cfg.Tracer == nil,
-		"cfgTracerPtr", fmt.Sprintf("%p", cfg.Tracer),
-		"chainType", fmt.Sprintf("%T", p.chain))
-
 	var tracingStateDB = vm.StateDB(statedb)
 	if hooks := cfg.Tracer; hooks != nil {
 		tracingStateDB = state.NewHookedState(statedb, hooks)
 	}
-	log.Info("[DEBUG-TRACE] state_processor.Process: tracingStateDB created",
-		"block", block.NumberU64(),
-		"tracingStateDBType", fmt.Sprintf("%T", tracingStateDB),
-		"cfgTracerNil", cfg.Tracer == nil)
 	context = NewEVMBlockContext(header, p.chain, author)
 	evm := vm.NewEVM(context, tracingStateDB, p.config, cfg)
 
@@ -160,19 +149,6 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 	}
 
 	// Finalize the block, applying any consensus engine specific extras (e.g. block rewards)
-	if p.chain.GetVMConfig() != nil {
-		log.Info("[DEBUG-TRACE] state_processor: before Finalize",
-			"block", block.NumberU64(),
-			"chainType", fmt.Sprintf("%T", p.chain),
-			"chainVmConfigPtr", fmt.Sprintf("%p", p.chain.GetVMConfig()),
-			"chainVmConfigTracerNil", p.chain.GetVMConfig().Tracer == nil,
-			"chainVmConfigTracerPtr", fmt.Sprintf("%p", p.chain.GetVMConfig().Tracer),
-			"passingStateType", fmt.Sprintf("%T", statedb))
-	} else {
-		log.Info("[DEBUG-TRACE] state_processor: before Finalize - vmConfig is NIL on chain",
-			"block", block.NumberU64(),
-			"chainType", fmt.Sprintf("%T", p.chain))
-	}
 	receiptsCountBeforeFinalize := len(receipts)
 	receipts = p.chain.engine.Finalize(p.chain, header, statedb, block.Body(), receipts)
 

@@ -1074,10 +1074,13 @@ func (c *Bor) Finalize(chain consensus.ChainHeaderReader, header *types.Header, 
 
 	if bc, ok := chain.(*core.BlockChain); ok {
 		vmCfg = *bc.GetVMConfig()
+		log.Info("[debug-smt] Finalize: chain is *core.BlockChain", "block", headerNumber, "hasTracer", vmCfg.Tracer != nil)
 	} else if hc, ok := chain.(*core.HeaderChain); ok {
-		if cfg := hc.GetVMConfig(); cfg != nil {
+		cfg := hc.GetVMConfig()
+		if cfg != nil {
 			vmCfg = *cfg
 		}
+		log.Info("[debug-smt] Finalize: chain is *core.HeaderChain", "block", headerNumber, "cfgNil", cfg == nil, "hasTracer", vmCfg.Tracer != nil)
 	}
 
 	if IsSprintStart(headerNumber, c.config.CalculateSprint(headerNumber)) {
@@ -1116,7 +1119,7 @@ func (c *Bor) Finalize(chain consensus.ChainHeaderReader, header *types.Header, 
 				log.Error("Error while committing states", "error", err)
 				return nil
 			}
-			}
+		}
 		// Get the underlying state for updating consensus time
 		state := wrappedState.Inner()
 		state.BorConsensusTime = time.Since(start)

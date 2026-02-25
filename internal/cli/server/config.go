@@ -167,6 +167,12 @@ type Config struct {
 
 	// Relay has transaction relay related settings
 	Relay *RelayConfig `hcl:"relay,block" toml:"relay,block"`
+
+	// VMTrace Name of tracer which should record internal VM operations (costly)
+	VMTrace string `hcl:"vmtrace,optional" toml:"vmtrace,optional"`
+
+	// VMTraceJsonConfig Tracer configuration (JSON)
+	VMTraceJsonConfig string `hcl:"vmtrace.jsonconfig,optional" toml:"vmtrace.jsonconfig,optional"`
 }
 
 type HistoryConfig struct {
@@ -1035,6 +1041,8 @@ func DefaultConfig() *Config {
 			LogNoHistory:       ethconfig.Defaults.LogNoHistory,
 			StateHistory:       params.FullImmutabilityThreshold,
 		},
+		VMTrace:           "",
+		VMTraceJsonConfig: "{}",
 		Health: &HealthConfig{
 			MaxGoRoutineThreshold:  0,
 			WarnGoRoutineThreshold: 0,
@@ -1610,6 +1618,8 @@ func (c *Config) buildEth(stack *node.Node, accountManager *accounts.Manager) (*
 	}
 
 	n.EnableBlockTracking = c.Logging.EnableBlockTracking
+	n.VMTrace = c.VMTrace
+	n.VMTraceJsonConfig = c.VMTraceJsonConfig
 
 	// Blind fork acceptance configs
 	n.DisableBlindForkValidation = c.DisableBlindForkValidation

@@ -1153,15 +1153,7 @@ func (c *Bor) Finalize(chain consensus.ChainHeaderReader, header *types.Header, 
 		vmCfg         vm.Config
 	)
 
-	if bc, ok := chain.(*core.BlockChain); ok {
-		vmCfg = *bc.GetVMConfig()
-	} else if hc, ok := chain.(*core.HeaderChain); ok {
-		if cfg := hc.GetVMConfig(); cfg != nil {
-			vmCfg = *cfg
-		}
-	}
-
-	vmCfg := extractVMConfig(chain)
+	vmCfg = extractVMConfig(chain)
 
 	if IsSprintStart(headerNumber, c.config.CalculateSprint(headerNumber)) {
 		start := time.Now()
@@ -1331,15 +1323,7 @@ func (c *Bor) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header *typ
 		vmCfg         vm.Config
 	)
 
-	if bc, ok := chain.(*core.BlockChain); ok {
-		vmCfg = *bc.GetVMConfig()
-	} else if hc, ok := chain.(*core.HeaderChain); ok {
-		if cfg := hc.GetVMConfig(); cfg != nil {
-			vmCfg = *cfg
-		}
-	}
-
-	vmCfg := extractVMConfig(chain)
+	vmCfg = extractVMConfig(chain)
 
 	if IsSprintStart(headerNumber, c.config.CalculateSprint(headerNumber)) {
 		cx := statefull.ChainContext{Chain: chain, Bor: c}

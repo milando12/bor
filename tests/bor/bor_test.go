@@ -711,7 +711,7 @@ func TestFetchStateSyncEvents_2(t *testing.T) {
 			// stored in cache, we're updating the underlying pointer here and hence we don't need to update the cache.
 			span0.ValidatorSet.Validators = currentValidators
 		} else {
-			currentValidators = []*stakeTypes.Validator{&stakeTypes.Validator{
+			currentValidators = []*stakeTypes.Validator{{
 				Signer:      addr.String(),
 				VotingPower: 10,
 			}}
@@ -2137,7 +2137,7 @@ func TestInvalidStateSyncInBlockBody(t *testing.T) {
 	createMaliciousBlock := func(block *types.Block, receipts []*types.Receipt) *types.Block {
 		maliciousBody := &types.Body{
 			Transactions: []*types.Transaction{types.NewTx(&types.StateSyncTx{
-				StateSyncData: []*types.StateSyncData{&types.StateSyncData{
+				StateSyncData: []*types.StateSyncData{{
 					ID:       1,
 					Contract: common.HexToAddress("0x0000000000000000000000000000000000001000"),
 					Data:     []byte{0x01, 0x02, 0x03},
@@ -2928,7 +2928,7 @@ func getMockedSpannerWithSpanRotation(t *testing.T, validator1, validator2 commo
 	}
 	spanner.EXPECT().GetCurrentSpan(gomock.Any(), gomock.Any(), gomock.Any()).Return(span1Mock, nil).AnyTimes()
 
-	spanner.EXPECT().CommitSpan(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+	spanner.EXPECT().CommitSpan(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	return spanner
 }

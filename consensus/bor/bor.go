@@ -410,13 +410,30 @@ func (c *Bor) verifyHeader(chain consensus.ChainHeaderReader, header *types.Head
 	number := header.Number.Uint64()
 	now := uint64(time.Now().Unix())
 
-	// Allow early blocks if Bhilai HF is enabled
-	if c.config.IsBhilai(header.Number) {
+	if c.config.IsRio(header.Number) {
+		// Rio HF introduced flexible blocktime (can be set larger than consensus without approval).
+		// Using strict CalcProducerDelay would reject valid blocks, so we just ensure announcement
+		// time comes after parent time to allow for flexible blocktime.
+		var parent *types.Header
+
+		if len(parents) > 0 {
+			parent = parents[len(parents)-1]
+		} else {
+			parent = chain.GetHeader(header.ParentHash, number-1)
+		}
+		if parent == nil || now < parent.Time {
+			log.Error("Block announced too early post rio", "number", number, "headerTime", header.Time, "now", now)
+			return consensus.ErrFutureBlock
+		}
+	} else if c.config.IsBhilai(header.Number) {
+		// Allow early blocks if Bhilai HF is enabled
 		// Don't waste time checking blocks from the future but allow a buffer of block time for
 		// early block announcements. Note that this is a loose check and would allow early blocks
 		// from non-primary producer. Such blocks will be rejected later when we know the succession
 		// number of the signer in the current sprint.
-		if header.Time-c.config.CalculatePeriod(number) > now {
+		// Uses CalcProducerDelay instead of block period to account for producer delay on sprint start blocks.
+		// We assume succession 0 (primary producer) to not be much restrictive for early block announcements.
+		if header.Time-CalcProducerDelay(number, 0, c.config) > now {
 			log.Error("Block announced too early post bhilai", "number", number, "headerTime", header.Time, "now", now)
 			return consensus.ErrFutureBlock
 		}
@@ -484,7 +501,18 @@ func (c *Bor) verifyHeader(chain consensus.ChainHeaderReader, header *types.Head
 		return err
 	}
 
-	c.recentVerifiedHeaders.Set(header.Hash(), header, ttlcache.DefaultTTL)
+	// Calculate TTL for the header cache entry
+	// If the header time is in the future (early announced block), add extra time to TTL
+	cacheTTL := veblopBlockTimeout
+	nowTime := time.Now()
+	headerTime := time.Unix(int64(header.Time), 0)
+	if headerTime.After(nowTime) {
+		// Add the time from now until header time as extra to the base timeout
+		extraTime := headerTime.Sub(nowTime)
+		cacheTTL = veblopBlockTimeout + extraTime
+	}
+
+	c.recentVerifiedHeaders.Set(header.Hash(), header, cacheTTL)
 	return nil
 }
 
@@ -941,7 +969,7 @@ func IsBlockEarly(parent *types.Header, header *types.Header, number uint64, suc
 
 // Prepare implements consensus.Engine, preparing all the consensus fields of the
 // header for running the transactions on top.
-func (c *Bor) Prepare(chain consensus.ChainHeaderReader, header *types.Header) error {
+func (c *Bor) Prepare(chain consensus.ChainHeaderReader, header *types.Header, waitOnPrepare bool) error {
 	// If the block isn't a checkpoint, cast a random vote (good enough for now)
 	header.Coinbase = common.Address{}
 	header.Nonce = types.BlockNonce{}
@@ -1039,6 +1067,8 @@ func (c *Bor) Prepare(chain consensus.ChainHeaderReader, header *types.Header) e
 		return fmt.Errorf("the floor of custom mining block time (%v) is less than the consensus block time: %v < %v", c.blockTime, c.blockTime.Seconds(), c.config.CalculatePeriod(number))
 	}
 
+	var delay time.Duration
+
 	if c.blockTime > 0 && c.config.IsRio(header.Number) {
 		// Only enable custom block time for Rio and later
 
@@ -1056,14 +1086,16 @@ func (c *Bor) Prepare(chain consensus.ChainHeaderReader, header *types.Header) e
 		actualNewBlockTime := parentActualBlockTime.Add(c.blockTime)
 		header.Time = uint64(actualNewBlockTime.Unix())
 		header.ActualTime = actualNewBlockTime
+		delay = time.Until(parentActualBlockTime)
 	} else {
 		header.Time = parent.Time + CalcProducerDelay(number, succession, c.config)
+		delay = time.Until(time.Unix(int64(parent.Time), 0))
 	}
 
 	now := time.Now()
 	if now.After(header.GetActualTime()) {
 		additionalBlockTime := time.Duration(c.config.CalculatePeriod(number)) * time.Second
-		if c.blockTime > 0 {
+		if c.blockTime > 0 && c.config.IsRio(header.Number) {
 			additionalBlockTime = c.blockTime
 		}
 		header.Time = uint64(now.Add(additionalBlockTime).Unix())
@@ -1072,7 +1104,36 @@ func (c *Bor) Prepare(chain consensus.ChainHeaderReader, header *types.Header) e
 		}
 	}
 
+	// Wait before start the block production if needed (previsously this wait was on Seal)
+	if c.config.IsBhilai(header.Number) && waitOnPrepare {
+		var successionNumber int
+		// if signer is not empty (RPC nodes have empty signer)
+		if currentSigner.signer != (common.Address{}) {
+			var err error
+			successionNumber, err = snap.GetSignerSuccessionNumber(currentSigner.signer)
+			if err != nil {
+				return err
+			}
+			if successionNumber == 0 {
+				<-time.After(delay)
+			}
+		}
+	}
+
 	return nil
+}
+
+// extractVMConfig retrieves the vm.Config from the chain reader, if available.
+func extractVMConfig(chain consensus.ChainHeaderReader) vm.Config {
+	if bc, ok := chain.(*core.BlockChain); ok {
+		return *bc.GetVMConfig()
+	}
+	if hc, ok := chain.(*core.HeaderChain); ok {
+		if cfg := hc.GetVMConfig(); cfg != nil {
+			return *cfg
+		}
+	}
+	return vm.Config{}
 }
 
 // Finalize implements consensus.Engine, ensuring no uncles are set, nor block
@@ -1100,23 +1161,22 @@ func (c *Bor) Finalize(chain consensus.ChainHeaderReader, header *types.Header, 
 		}
 	}
 
+	vmCfg := extractVMConfig(chain)
+
 	if IsSprintStart(headerNumber, c.config.CalculateSprint(headerNumber)) {
 		start := time.Now()
 		cx := statefull.ChainContext{Chain: chain, Bor: c}
 
 		// Start tracing StateSyncTx (if present in the block body)
-		var stateSyncTx *types.Transaction
-		if c.config.IsMadhugiri(header.Number) && len(body.Transactions) > 0 {
-			lastTx := body.Transactions[len(body.Transactions)-1]
-			if lastTx.Type() == types.StateSyncTxType {
-				stateSyncTx = lastTx
-				if hooks := vmCfg.Tracer; hooks != nil && hooks.OnTxStart != nil {
-					// todo(milando12): check how much overhead this adds, if it does we can initialize it earlier and pass down to ApplyMessage()
+		if hooks := vmCfg.Tracer; hooks != nil && hooks.OnTxStart != nil {
+			if c.config.IsMadhugiri(header.Number) && len(body.Transactions) > 0 {
+				lastTx := body.Transactions[len(body.Transactions)-1]
+				if lastTx.Type() == types.StateSyncTxType {
 					vmenv := vm.NewEVM(
 						core.NewEVMBlockContext(header, cx, &header.Coinbase),
 						wrappedState, c.chainConfig, vmCfg,
 					)
-					hooks.OnTxStart(vmenv.GetVMContext(), stateSyncTx, statefull.SystemAddress)
+					hooks.OnTxStart(vmenv.GetVMContext(), lastTx, statefull.SystemAddress)
 				}
 			}
 		}
@@ -1136,7 +1196,7 @@ func (c *Bor) Finalize(chain consensus.ChainHeaderReader, header *types.Header, 
 				log.Error("Error while committing states", "error", err)
 				return nil
 			}
-			}
+		}
 		// Get the underlying state for updating consensus time
 		state := wrappedState.Inner()
 		state.BorConsensusTime = time.Since(start)
@@ -1279,6 +1339,8 @@ func (c *Bor) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header *typ
 		}
 	}
 
+	vmCfg := extractVMConfig(chain)
+
 	if IsSprintStart(headerNumber, c.config.CalculateSprint(headerNumber)) {
 		cx := statefull.ChainContext{Chain: chain, Bor: c}
 
@@ -1378,14 +1440,8 @@ func (c *Bor) Seal(chain consensus.ChainHeaderReader, block *types.Block, witnes
 	var delay time.Duration
 
 	// Sweet, the protocol permits us to sign the block, wait for our time
-	if c.config.IsBhilai(header.Number) {
-		delay = time.Until(header.GetActualTime()) // Wait until we reach header time for non-primary validators
-		// Disable early block announcement
-		// if successionNumber == 0 {
-		// 	// For primary producers, set the delay to `header.Time - block time` instead of `header.Time`
-		// 	// for early block announcement instead of waiting for full block time.
-		// 	delay = time.Until(time.Unix(int64(header.Time-c.config.CalculatePeriod(number)), 0))
-		// }
+	if c.config.IsBhilai(header.Number) && successionNumber == 0 {
+		delay = 0 // delay was moved to Prepare for bhilai and later
 	} else {
 		delay = time.Until(header.GetActualTime()) // Wait until we reach header time
 	}

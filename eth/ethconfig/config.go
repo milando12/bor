@@ -231,6 +231,9 @@ type Config struct {
 	// position in eth_getLogs filter criteria (0 = no cap)
 	RPCLogQueryLimit int
 
+	// RPCBlockRangeLimit is the maximum block range allowed in eth_getLogs / bor_getLogs (0 = unlimited)
+	RPCBlockRangeLimit uint64
+
 	// URL to connect to Heimdall node (comma-separated for failover: "url1,url2,url3")
 	HeimdallURL string
 
@@ -304,6 +307,10 @@ type Config struct {
 
 	// WitnessAPIEnabled enables witness API endpoints
 	WitnessAPIEnabled bool
+
+	// WitnessFileStore enables storing witness blobs on the filesystem
+	// instead of in the key-value database. Reduces DB write amplification.
+	WitnessFileStore bool
 
 	// DisableBlindForkValidation disables additional fork validation and accept blind forks without tracing back to last whitelisted entry
 	DisableBlindForkValidation bool

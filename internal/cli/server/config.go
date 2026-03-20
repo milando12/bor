@@ -172,12 +172,6 @@ type Config struct {
 
 	// Relay has transaction relay related settings
 	Relay *RelayConfig `hcl:"relay,block" toml:"relay,block"`
-
-	// VMTrace Name of tracer which should record internal VM operations (costly)
-	VMTrace string `hcl:"vmtrace,optional" toml:"vmtrace,optional"`
-
-	// VMTraceJsonConfig Tracer configuration (JSON)
-	VMTraceJsonConfig string `hcl:"vmtrace.jsonconfig,optional" toml:"vmtrace.jsonconfig,optional"`
 }
 
 type HistoryConfig struct {

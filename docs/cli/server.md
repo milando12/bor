@@ -110,10 +110,6 @@ The ```bor server``` command runs the Bor client.
 
 - ```vmdebug```: Record information useful for VM and contract debugging (default: false)
 
-- ```vmtrace```: Name of tracer which should observe internal VM operations (e.g. 'json')
-
-- ```vmtrace.jsonconfig```: Tracer configuration (JSON)
-
 - ```witness.enable```: Enable witness protocol (default: false)
 
 - ```witness.fastforwardthreshold```: Minimum necessary distance between local header and chain tip to trigger fast forward (default: 6400)

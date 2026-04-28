@@ -30,6 +30,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 )
 
@@ -188,10 +189,22 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 func ApplyTransactionWithEVM(msg *Message, gp *GasPool, statedb *state.StateDB, blockNumber *big.Int, blockHash common.Hash, blockTime uint64, tx *types.Transaction, usedGas *uint64, evm *vm.EVM) (receipt *types.Receipt, err error) {
 	if hooks := evm.Config.Tracer; hooks != nil {
 		if hooks.OnTxStart != nil {
+			log.Debug("state_processor.ApplyTransactionWithEVM: OnTxStart",
+				"caller", "state_processor",
+				"txHash", tx.Hash().Hex(),
+				"txType", tx.Type(),
+				"block", blockNumber)
 			hooks.OnTxStart(evm.GetVMContext(), tx, msg.From)
 		}
 		if hooks.OnTxEnd != nil {
-			defer func() { hooks.OnTxEnd(receipt, err) }()
+			defer func() {
+				log.Debug("state_processor.ApplyTransactionWithEVM: OnTxEnd",
+					"caller", "state_processor",
+					"txHash", tx.Hash().Hex(),
+					"err", err,
+					"receiptIsNil", receipt == nil)
+				hooks.OnTxEnd(receipt, err)
+			}()
 		}
 	}
 

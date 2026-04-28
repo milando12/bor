@@ -19,11 +19,32 @@ package tracing
 import (
 	"errors"
 	"math/big"
+	"runtime"
+	"runtime/debug"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
 )
+
+// goroutineID extracts the current goroutine ID for diagnostic logs.
+// Returns 0 on parse failure.
+func goroutineID() uint64 {
+	var buf [64]byte
+	n := runtime.Stack(buf[:], false)
+	if n < 11 {
+		return 0
+	}
+	s := buf[10:n]
+	var id uint64
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			break
+		}
+		id = id*10 + uint64(s[i]-'0')
+	}
+	return id
+}
 
 // safeHookCall invokes a live tracer hook and recovers from any panic so a
 // buggy or stateful tracer cannot kill the bor process. Tracing data for the
@@ -33,7 +54,11 @@ import (
 func safeHookCall(name string, fn func()) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Error("Live tracer panicked, dropping hook event", "hook", name, "panic", r)
+			log.Error("Live tracer panicked, dropping hook event",
+				"hook", name,
+				"panic", r,
+				"gid", goroutineID(),
+				"stack", string(debug.Stack()))
 		}
 	}()
 	fn()
@@ -120,7 +145,9 @@ func (j *journal) revert(hooks *Hooks) {
 	// firing during a panic-recovery cascade) can leave the revision stack
 	// empty. Skip the revert rather than slice-underflow and crash the node.
 	if len(j.revisions) == 0 {
-		log.Warn("Live tracer journal: revert on empty revision stack — skipping (likely OnEnter/OnExit mismatch)")
+		log.Warn("Live tracer journal: revert on empty revision stack — skipping (likely OnEnter/OnExit mismatch)",
+			"gid", goroutineID(),
+			"entries.len", len(j.entries))
 		return
 	}
 	// Replay the journal entries above the last revision to undo changes,
@@ -140,7 +167,9 @@ func (j *journal) popRevision() {
 	// underflow when a tracer's OnExit fires without a matching OnEnter,
 	// or when a panic-recovery cascade emits extra OnExit calls.
 	if len(j.revisions) == 0 {
-		log.Warn("Live tracer journal: popRevision on empty revision stack — skipping (likely OnEnter/OnExit mismatch)")
+		log.Warn("Live tracer journal: popRevision on empty revision stack — skipping (likely OnEnter/OnExit mismatch)",
+			"gid", goroutineID(),
+			"entries.len", len(j.entries))
 		return
 	}
 	j.revisions = j.revisions[:len(j.revisions)-1]
@@ -148,6 +177,11 @@ func (j *journal) popRevision() {
 
 // OnTxEnd resets the journal since each transaction has its own EVM call stack.
 func (j *journal) OnTxEnd(receipt *types.Receipt, err error) {
+	log.Debug("journal.OnTxEnd",
+		"gid", goroutineID(),
+		"err", err,
+		"revisions.len", len(j.revisions),
+		"entries.len", len(j.entries))
 	j.reset()
 	if j.hooks.OnTxEnd != nil {
 		safeHookCall("OnTxEnd", func() { j.hooks.OnTxEnd(receipt, err) })
@@ -156,6 +190,12 @@ func (j *journal) OnTxEnd(receipt *types.Receipt, err error) {
 
 // OnEnter is invoked for each EVM call frame and records a journal revision.
 func (j *journal) OnEnter(depth int, typ byte, from common.Address, to common.Address, input []byte, gas uint64, value *big.Int) {
+	log.Debug("journal.OnEnter",
+		"gid", goroutineID(),
+		"depth", depth,
+		"from", from.Hex(),
+		"to", to.Hex(),
+		"revisions.before", len(j.revisions))
 	j.snapshot()
 	if j.hooks.OnEnter != nil {
 		safeHookCall("OnEnter", func() { j.hooks.OnEnter(depth, typ, from, to, input, gas, value) })
@@ -166,6 +206,12 @@ func (j *journal) OnEnter(depth int, typ byte, from common.Address, to common.Ad
 // If the call has reverted, all state changes made by that frame are undone.
 // If the call did not revert, we forget about changes in that revision.
 func (j *journal) OnExit(depth int, output []byte, gasUsed uint64, err error, reverted bool) {
+	log.Debug("journal.OnExit",
+		"gid", goroutineID(),
+		"depth", depth,
+		"reverted", reverted,
+		"err", err,
+		"revisions.before", len(j.revisions))
 	if reverted {
 		j.revert(j.hooks)
 	} else {

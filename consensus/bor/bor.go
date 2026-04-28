@@ -1213,6 +1213,11 @@ func (c *Bor) Finalize(chain consensus.ChainHeaderReader, header *types.Header, 
 	defer func() {
 		if stateSyncTxStarted && !stateSyncTxEnded {
 			if hooks := vmCfg.Tracer; hooks != nil && hooks.OnTxEnd != nil {
+				log.Info("bor.Finalize: firing deferred OnTxEnd for StateSyncTx (error/early-return path)",
+					"caller", "bor.Finalize",
+					"path", "defer",
+					"block", headerNumber,
+					"err", err)
 				hooks.OnTxEnd(nil, err)
 			}
 		}
@@ -1231,6 +1236,11 @@ func (c *Bor) Finalize(chain consensus.ChainHeaderReader, header *types.Header, 
 						core.NewEVMBlockContext(header, cx, &header.Coinbase),
 						wrappedState, c.chainConfig, vmCfg,
 					)
+					log.Info("bor.Finalize: firing OnTxStart for StateSyncTx",
+						"caller", "bor.Finalize",
+						"path", "happy",
+						"block", headerNumber,
+						"txHash", lastTx.Hash().Hex())
 					hooks.OnTxStart(vmenv.GetVMContext(), lastTx, statefull.SystemAddress)
 					stateSyncTxStarted = true
 				}
@@ -1335,6 +1345,11 @@ func insertStateSyncTransactionAndCalculateReceipt(stateSyncTx *types.Transactio
 
 	// End tracing for StateSyncTx
 	if hooks := vmConfig.Tracer; hooks != nil && hooks.OnTxEnd != nil {
+		log.Info("bor.insertStateSyncTransactionAndCalculateReceipt: firing OnTxEnd for StateSyncTx",
+			"caller", "bor.Finalize",
+			"path", "happy",
+			"block", header.Number,
+			"txHash", stateSyncTx.Hash().Hex())
 		hooks.OnTxEnd(stateSyncReceipt, nil)
 	}
 

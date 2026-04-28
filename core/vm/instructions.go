@@ -24,6 +24,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 )
 
@@ -959,6 +960,10 @@ func opSelfdestruct(pc *uint64, evm *EVM, scope *ScopeContext) ([]byte, error) {
 	evm.StateDB.AddBalance(beneficiary.Bytes20(), balance, tracing.BalanceIncreaseSelfdestruct)
 	evm.StateDB.SelfDestruct(scope.Contract.Address())
 	if tracer := evm.Config.Tracer; tracer != nil {
+		log.Trace("opSelfdestruct: synthetic OnEnter+OnExit pair",
+			"depth", evm.depth,
+			"from", scope.Contract.Address().Hex(),
+			"to", common.Address(beneficiary.Bytes20()).Hex())
 		if tracer.OnEnter != nil {
 			tracer.OnEnter(evm.depth, byte(SELFDESTRUCT), scope.Contract.Address(), beneficiary.Bytes20(), []byte{}, 0, balance.ToBig())
 		}
@@ -979,6 +984,10 @@ func opSelfdestruct6780(pc *uint64, evm *EVM, scope *ScopeContext) ([]byte, erro
 	evm.StateDB.AddBalance(beneficiary.Bytes20(), balance, tracing.BalanceIncreaseSelfdestruct)
 	evm.StateDB.SelfDestruct6780(scope.Contract.Address())
 	if tracer := evm.Config.Tracer; tracer != nil {
+		log.Trace("opSelfdestruct6780: synthetic OnEnter+OnExit pair",
+			"depth", evm.depth,
+			"from", scope.Contract.Address().Hex(),
+			"to", common.Address(beneficiary.Bytes20()).Hex())
 		if tracer.OnEnter != nil {
 			tracer.OnEnter(evm.depth, byte(SELFDESTRUCT), scope.Contract.Address(), beneficiary.Bytes20(), []byte{}, 0, balance.ToBig())
 		}

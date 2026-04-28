@@ -697,6 +697,10 @@ func (evm *EVM) ChainConfig() *params.ChainConfig { return evm.chainConfig }
 
 func (evm *EVM) captureBegin(depth int, typ OpCode, from common.Address, to common.Address, input []byte, startGas uint64, value *big.Int) {
 	tracer := evm.Config.Tracer
+	log.Trace("evm.captureBegin",
+		"depth", depth, "typ", typ.String(),
+		"from", from.Hex(), "to", to.Hex(),
+		"gas", startGas)
 	if tracer.OnEnter != nil {
 		tracer.OnEnter(depth, byte(typ), from, to, input, startGas, value)
 	}
@@ -707,6 +711,10 @@ func (evm *EVM) captureBegin(depth int, typ OpCode, from common.Address, to comm
 
 func (evm *EVM) captureEnd(depth int, startGas uint64, leftOverGas uint64, ret []byte, err error) {
 	tracer := evm.Config.Tracer
+	log.Trace("evm.captureEnd",
+		"depth", depth,
+		"gasUsed", startGas-leftOverGas,
+		"err", err)
 	if leftOverGas != 0 && tracer.OnGasChange != nil {
 		tracer.OnGasChange(leftOverGas, 0, tracing.GasChangeCallLeftOverReturned)
 	}

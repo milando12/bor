@@ -822,6 +822,9 @@ func (bc *BlockChain) ProcessBlock(block *types.Block, parent *types.Header, wit
 			// in another goroutine and writes to the same tracer's call stack).
 			parallelVmCfg := bc.cfg.VmConfig
 			parallelVmCfg.Tracer = nil
+			log.Debug("blockchain.ProcessBlock: spawning parallel processor goroutine (tracer disabled)",
+				"block", block.NumberU64(),
+				"hash", block.Hash().Hex())
 			pstart := time.Now()
 			parallelStatedb.StartPrefetcher("chain", witness, nil)
 			res, err := bc.parallelProcessor.Process(block, parallelStatedb, parallelVmCfg, nil, ctx)
@@ -842,6 +845,11 @@ func (bc *BlockChain) ProcessBlock(block *types.Block, parent *types.Header, wit
 		processorCount++
 
 		go func() {
+			tracerPresent := bc.cfg.VmConfig.Tracer != nil
+			log.Debug("blockchain.ProcessBlock: spawning serial processor goroutine",
+				"block", block.NumberU64(),
+				"hash", block.Hash().Hex(),
+				"tracerPresent", tracerPresent)
 			pstart := time.Now()
 			statedb.StartPrefetcher("chain", witness, nil)
 			res, err := bc.processor.Process(block, statedb, bc.cfg.VmConfig, nil, ctx)

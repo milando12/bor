@@ -29,6 +29,7 @@ import (
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/ethdb"
@@ -3856,6 +3857,179 @@ func TestFinalize_NoStateSyncEvents_EmptyBodyOK(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, receipts)
 	require.Len(t, receipts, 0, "no state-sync receipt expected when there are no events")
+}
+
+// counterHooks counts OnTxStart and OnTxEnd invocations so a test can assert
+// that every Finalize exit path which fires OnTxStart also fires OnTxEnd.
+type counterHooks struct {
+	onTxStart      int
+	onTxEnd        int
+	lastEndReceipt *types.Receipt
+	lastEndErr     error
+}
+
+func (c *counterHooks) hooks() *tracing.Hooks {
+	return &tracing.Hooks{
+		OnTxStart: func(*tracing.VMContext, *types.Transaction, common.Address) {
+			c.onTxStart++
+		},
+		OnTxEnd: func(receipt *types.Receipt, err error) {
+			c.onTxEnd++
+			c.lastEndReceipt = receipt
+			c.lastEndErr = err
+		},
+	}
+}
+
+// setupMadhugiriStateSyncTestWithTracer mirrors setupMadhugiriStateSyncTest but
+// installs a tracing.Hooks on the BlockChain's vm.Config so Bor.Finalize sees
+// it via extractVMConfig.
+func setupMadhugiriStateSyncTestWithTracer(t *testing.T, events []*clerk.EventRecordWithTime, hooks *tracing.Hooks) (*core.BlockChain, *Bor, *types.Header, *types.Header) {
+	t.Helper()
+
+	addr1 := common.HexToAddress("0x1")
+	sp := &fakeSpanner{vals: []*valset.Validator{{Address: addr1, VotingPower: 1}}}
+	mockGC := &mockGenesisContractForCommitStatesIndore{lastStateID: 0, gasUsed: 100}
+
+	cfg := &params.ChainConfig{ChainID: big.NewInt(1), Bor: madhugiriBorConfig()}
+	genesisTime := uint64(time.Now().Unix()) - 200
+
+	ctx, ctxCancel := context.WithCancel(context.Background())
+	b := &Bor{chainConfig: cfg, config: cfg.Bor, DevFakeAuthor: true, ctx: ctx, ctxCancel: ctxCancel}
+	b.db = rawdb.NewMemoryDatabase()
+	b.recents = ttlcache.New(
+		ttlcache.WithTTL[common.Hash, *Snapshot](veblopBlockTimeout),
+		ttlcache.WithCapacity[common.Hash, *Snapshot](inmemorySnapshots),
+		ttlcache.WithDisableTouchOnHit[common.Hash, *Snapshot](),
+	)
+	sig, _ := lru.NewARC(inmemorySignatures)
+	b.signatures = sig
+	b.recentVerifiedHeaders = ttlcache.New[common.Hash, *types.Header](
+		ttlcache.WithTTL[common.Hash, *types.Header](veblopBlockTimeout),
+		ttlcache.WithCapacity[common.Hash, *types.Header](inmemorySignatures),
+		ttlcache.WithDisableTouchOnHit[common.Hash, *types.Header](),
+	)
+	b.spanStore = NewSpanStore(nil, sp, cfg.ChainID.String())
+	b.SetSpanner(sp)
+	b.authorizedSigner.Store(&signer{signer: addr1})
+	b.parentActualTimeCache, _ = lru.New(10)
+	b.GenesisContractsClient = mockGC
+
+	b.SetHeimdallClient(&mockHeimdallClient{
+		span: &borTypes.Span{
+			Id: 0, StartBlock: 0, EndBlock: 255, BorChainId: "1",
+			ValidatorSet: stakeTypes.ValidatorSet{
+				Validators: []*stakeTypes.Validator{{ValId: 1, Signer: addr1.Hex(), VotingPower: 1}},
+			},
+			SelectedProducers: []stakeTypes.Validator{{ValId: 1, Signer: addr1.Hex(), VotingPower: 1}},
+		},
+		events: events,
+	})
+
+	genspec := &core.Genesis{Config: cfg, Timestamp: genesisTime}
+	db := rawdb.NewMemoryDatabase()
+	_ = genspec.MustCommit(db, triedb.NewDatabase(db, triedb.HashDefaults))
+
+	bcCfg := core.DefaultConfig()
+	if hooks != nil {
+		bcCfg.VmConfig.Tracer = hooks
+	}
+
+	chain, err := core.NewBlockChain(rawdb.NewMemoryDatabase(), genspec, b, bcCfg)
+	require.NoError(t, err)
+
+	genesis := chain.HeaderChain().GetHeaderByNumber(0)
+	h := &types.Header{
+		Number:     big.NewInt(16),
+		ParentHash: genesis.Hash(),
+		Time:       uint64(time.Now().Unix()),
+		Difficulty: big.NewInt(1),
+		GasLimit:   30_000_000,
+		Coinbase:   addr1,
+	}
+	return chain, b, h, genesis
+}
+
+// TestFinalize_OnTxStartOnTxEndPairing asserts that every Finalize exit path
+// which fires OnTxStart also fires exactly one OnTxEnd. The previous regression
+// (panic in tracer PeekCurrentCall on polygon-mainnet block 86,081,769) was
+// triggered by an OnTxStart that was never matched with OnTxEnd on the
+// ErrStateSyncMismatch hash-mismatch and similar early-return paths added by
+// the v2.7.2 Finalize refactor.
+func TestFinalize_OnTxStartOnTxEndPairing(t *testing.T) {
+	t.Parallel()
+
+	t.Run("hash mismatch fires OnTxEnd with error", func(t *testing.T) {
+		t.Parallel()
+		hooks := &counterHooks{}
+		chain, b, h, genesis := setupMadhugiriStateSyncTestWithTracer(t, defaultStateSyncEvents(), hooks.hooks())
+		statedb := newStateDBForTest(t, genesis.Root)
+
+		// StateSyncTx with data different from what Heimdall returns -> hash mismatch.
+		wrongTx := types.NewTx(&types.StateSyncTx{
+			StateSyncData: []*types.StateSyncData{{
+				ID:       1,
+				Contract: common.HexToAddress("0x1001"),
+				Data:     []byte{0x99, 0x99},
+				TxHash:   common.Hash{},
+			}},
+		})
+		body := &types.Body{Transactions: []*types.Transaction{wrongTx}}
+
+		_, err := b.Finalize(chain.HeaderChain(), h, statedb, body, nil)
+		require.ErrorIs(t, err, core.ErrStateSyncMismatch)
+		require.Equal(t, 1, hooks.onTxStart, "OnTxStart should fire once")
+		require.Equal(t, 1, hooks.onTxEnd, "OnTxEnd must fire on hash-mismatch error path")
+		require.Nil(t, hooks.lastEndReceipt, "OnTxEnd on error path should pass nil receipt")
+		require.ErrorIs(t, hooks.lastEndErr, core.ErrStateSyncMismatch)
+	})
+
+	t.Run("CommitStates error fires OnTxEnd with error", func(t *testing.T) {
+		t.Parallel()
+		hooks := &counterHooks{}
+		chain, b, h, genesis := setupMadhugiriStateSyncTestWithTracer(t, defaultStateSyncEvents(), hooks.hooks())
+		b.GenesisContractsClient = &failingGenesisContract{}
+		statedb := newStateDBForTest(t, genesis.Root)
+
+		// Body has a StateSyncTx so OnTxStart fires before CommitStates error.
+		body := &types.Body{Transactions: []*types.Transaction{matchingStateSyncTx()}}
+
+		_, err := b.Finalize(chain.HeaderChain(), h, statedb, body, nil)
+		require.ErrorIs(t, err, core.ErrStateSyncProcessing)
+		require.Equal(t, 1, hooks.onTxStart, "OnTxStart should fire once")
+		require.Equal(t, 1, hooks.onTxEnd, "OnTxEnd must fire on CommitStates error path")
+		require.Nil(t, hooks.lastEndReceipt)
+		require.ErrorIs(t, hooks.lastEndErr, core.ErrStateSyncProcessing)
+	})
+
+	t.Run("happy path fires OnTxEnd with receipt", func(t *testing.T) {
+		t.Parallel()
+		hooks := &counterHooks{}
+		chain, b, h, genesis := setupMadhugiriStateSyncTestWithTracer(t, defaultStateSyncEvents(), hooks.hooks())
+		statedb := newStateDBForTest(t, genesis.Root)
+		body := &types.Body{Transactions: []*types.Transaction{matchingStateSyncTx()}}
+
+		receipts, err := b.Finalize(chain.HeaderChain(), h, statedb, body, nil)
+		require.NoError(t, err)
+		require.Len(t, receipts, 1)
+		require.Equal(t, 1, hooks.onTxStart, "OnTxStart should fire once on happy path")
+		require.Equal(t, 1, hooks.onTxEnd, "OnTxEnd should fire once on happy path")
+		require.NotNil(t, hooks.lastEndReceipt, "OnTxEnd on success should pass the state-sync receipt")
+		require.NoError(t, hooks.lastEndErr)
+	})
+
+	t.Run("non-state-sync block does not fire OnTxStart or OnTxEnd", func(t *testing.T) {
+		t.Parallel()
+		hooks := &counterHooks{}
+		chain, b, h, genesis := setupMadhugiriStateSyncTestWithTracer(t, []*clerk.EventRecordWithTime{}, hooks.hooks())
+		statedb := newStateDBForTest(t, genesis.Root)
+		body := &types.Body{}
+
+		_, err := b.Finalize(chain.HeaderChain(), h, statedb, body, nil)
+		require.NoError(t, err)
+		require.Equal(t, 0, hooks.onTxStart, "OnTxStart should not fire when last tx is not StateSyncTxType")
+		require.Equal(t, 0, hooks.onTxEnd, "OnTxEnd should not fire when OnTxStart did not fire")
+	})
 }
 
 func TestSnapshot_HeaderTraversal(t *testing.T) {

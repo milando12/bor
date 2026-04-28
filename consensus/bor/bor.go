@@ -1186,7 +1186,7 @@ func extractVMConfig(chain consensus.ChainHeaderReader) vm.Config {
 
 // Finalize implements consensus.Engine, ensuring no uncles are set, nor block
 // rewards given.
-func (c *Bor) Finalize(chain consensus.ChainHeaderReader, header *types.Header, wrappedState vm.StateDB, body *types.Body, receipts []*types.Receipt) ([]*types.Receipt, error) {
+func (c *Bor) Finalize(chain consensus.ChainHeaderReader, header *types.Header, wrappedState vm.StateDB, body *types.Body, receipts []*types.Receipt) (_ []*types.Receipt, err error) {
 	// Reject the block if it has withdrawals or requests
 	if body.Withdrawals != nil || header.WithdrawalsHash != nil {
 		return nil, consensus.ErrUnexpectedWithdrawals
@@ -1198,10 +1198,25 @@ func (c *Bor) Finalize(chain consensus.ChainHeaderReader, header *types.Header, 
 	var (
 		headerNumber  = header.Number.Uint64()
 		stateSyncData []*types.StateSyncData
-		err           error
 	)
 
 	vmCfg := extractVMConfig(chain)
+
+	// Pair OnTxStart with OnTxEnd: every Finalize exit path that fires OnTxStart
+	// must also fire OnTxEnd. The success path fires OnTxEnd from
+	// insertStateSyncTransactionAndCalculateReceipt; this defer covers all
+	// error/early-return paths in between.
+	var (
+		stateSyncTxStarted bool
+		stateSyncTxEnded   bool
+	)
+	defer func() {
+		if stateSyncTxStarted && !stateSyncTxEnded {
+			if hooks := vmCfg.Tracer; hooks != nil && hooks.OnTxEnd != nil {
+				hooks.OnTxEnd(nil, err)
+			}
+		}
+	}()
 
 	if IsSprintStart(headerNumber, c.config.CalculateSprint(headerNumber)) {
 		start := time.Now()
@@ -1217,14 +1232,15 @@ func (c *Bor) Finalize(chain consensus.ChainHeaderReader, header *types.Header, 
 						wrappedState, c.chainConfig, vmCfg,
 					)
 					hooks.OnTxStart(vmenv.GetVMContext(), lastTx, statefull.SystemAddress)
+					stateSyncTxStarted = true
 				}
 			}
 		}
 
 		// check and commit span
 		if !c.config.IsRio(header.Number) {
-			if err := c.checkAndCommitSpan(wrappedState, header, cx, vmCfg); err != nil {
-				return nil, fmt.Errorf("error while committing span: %w", err)
+			if spanErr := c.checkAndCommitSpan(wrappedState, header, cx, vmCfg); spanErr != nil {
+				return nil, fmt.Errorf("error while committing span: %w", spanErr)
 			}
 		}
 
@@ -1279,6 +1295,7 @@ func (c *Bor) Finalize(chain consensus.ChainHeaderReader, header *types.Header, 
 		return nil, fmt.Errorf("%w: hash mismatch, got %s want %s", core.ErrStateSyncMismatch, lastTx.Hash(), stateSyncTx.Hash())
 	}
 	receipts = insertStateSyncTransactionAndCalculateReceipt(lastTx, header, body, wrappedState, receipts, vmCfg)
+	stateSyncTxEnded = true
 	return receipts, nil
 }
 

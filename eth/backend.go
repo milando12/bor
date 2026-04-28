@@ -340,9 +340,21 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 
 	// check if Parallel EVM is enabled
 	// if enabled, use parallel state processor
-	if config.ParallelEVM.Enable {
+	//
+	// Live tracers are not guaranteed to be goroutine-safe. The parallel
+	// blockchain runs the parallel and serial processors in two concurrent
+	// goroutines that share the same VmConfig.Tracer pointer. Tracer
+	// implementations such as the Tenderly live tracer maintain mutable
+	// state (call stack, maps) that races under that pattern and produces
+	// `concurrent map read and map write` fatals plus call-stack underflow
+	// panics. Force the non-parallel blockchain when a live tracer is
+	// configured so only one goroutine ever invokes the tracer.
+	if config.ParallelEVM.Enable && options.VmConfig.Tracer == nil {
 		eth.blockchain, err = core.NewParallelBlockChain(chainDb, config.Genesis, eth.engine, options, config.ParallelEVM.SpeculativeProcesses, config.ParallelEVM.Enforce)
 	} else {
+		if config.ParallelEVM.Enable && options.VmConfig.Tracer != nil {
+			log.Warn("Parallel EVM disabled: a live tracer is registered and tracer hooks are not goroutine-safe under parallel block processing", "tracer", config.VMTrace)
+		}
 		eth.blockchain, err = core.NewBlockChain(chainDb, config.Genesis, eth.engine, options)
 	}
 

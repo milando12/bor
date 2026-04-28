@@ -116,6 +116,13 @@ func (j *journal) snapshot() {
 
 // revert reverts all state changes up to the last tracked revision.
 func (j *journal) revert(hooks *Hooks) {
+	// Defensive: an unbalanced OnEnter/OnExit sequence (e.g. extra OnExit
+	// firing during a panic-recovery cascade) can leave the revision stack
+	// empty. Skip the revert rather than slice-underflow and crash the node.
+	if len(j.revisions) == 0 {
+		log.Warn("Live tracer journal: revert on empty revision stack — skipping (likely OnEnter/OnExit mismatch)")
+		return
+	}
 	// Replay the journal entries above the last revision to undo changes,
 	// then remove the reverted changes from the journal.
 	rev := j.revisions[len(j.revisions)-1]
@@ -129,6 +136,13 @@ func (j *journal) revert(hooks *Hooks) {
 // popRevision removes an item from the revision stack. This basically forgets about
 // the last call to snapshot() and moves to the one prior.
 func (j *journal) popRevision() {
+	// Defensive: same rationale as revert — guard against empty-stack
+	// underflow when a tracer's OnExit fires without a matching OnEnter,
+	// or when a panic-recovery cascade emits extra OnExit calls.
+	if len(j.revisions) == 0 {
+		log.Warn("Live tracer journal: popRevision on empty revision stack — skipping (likely OnEnter/OnExit mismatch)")
+		return
+	}
 	j.revisions = j.revisions[:len(j.revisions)-1]
 }
 

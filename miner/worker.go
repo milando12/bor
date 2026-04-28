@@ -2369,9 +2369,17 @@ func (w *worker) clearPending(number uint64) {
 	w.pendingMu.Unlock()
 }
 
-// vmConfig returns the VM config.
+// vmConfig returns a copy of the chain VM config with the live tracer
+// stripped. The miner worker builds speculative pending blocks that may
+// be reordered or discarded, so its EVM events must never reach the
+// live tracer — which assumes serial OnEnter/OnExit invocations from
+// the import goroutine alone. Sharing the tracer pointer here races
+// with BlockChain.ProcessBlock and corrupts the tracer's call stack
+// and internal maps. Mirrors the parallel-processor guard in
+// core/blockchain.go (parallelVmCfg.Tracer = nil).
 func (w *worker) vmConfig() vm.Config {
 	cfg := *w.chain.GetVMConfig()
+	cfg.Tracer = nil
 	return cfg
 }
 

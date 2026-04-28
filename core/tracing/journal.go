@@ -22,7 +22,22 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/log"
 )
+
+// safeHookCall invokes a live tracer hook and recovers from any panic so a
+// buggy or stateful tracer cannot kill the bor process. Tracing data for the
+// affected event is lost; block import continues. Without this guard, a panic
+// inside e.g. CallTracer.PeekCurrentCall (empty call-stack) escapes the
+// tracer's own recover layer (panic-during-panic) and crashes the node.
+func safeHookCall(name string, fn func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("Live tracer panicked, dropping hook event", "hook", name, "panic", r)
+		}
+	}()
+	fn()
+}
 
 // journal is a state change journal to be wrapped around a tracer.
 // It will emit the state change hooks with reverse values when a call reverts.
@@ -121,7 +136,7 @@ func (j *journal) popRevision() {
 func (j *journal) OnTxEnd(receipt *types.Receipt, err error) {
 	j.reset()
 	if j.hooks.OnTxEnd != nil {
-		j.hooks.OnTxEnd(receipt, err)
+		safeHookCall("OnTxEnd", func() { j.hooks.OnTxEnd(receipt, err) })
 	}
 }
 
@@ -129,7 +144,7 @@ func (j *journal) OnTxEnd(receipt *types.Receipt, err error) {
 func (j *journal) OnEnter(depth int, typ byte, from common.Address, to common.Address, input []byte, gas uint64, value *big.Int) {
 	j.snapshot()
 	if j.hooks.OnEnter != nil {
-		j.hooks.OnEnter(depth, typ, from, to, input, gas, value)
+		safeHookCall("OnEnter", func() { j.hooks.OnEnter(depth, typ, from, to, input, gas, value) })
 	}
 }
 
@@ -143,14 +158,14 @@ func (j *journal) OnExit(depth int, output []byte, gasUsed uint64, err error, re
 		j.popRevision()
 	}
 	if j.hooks.OnExit != nil {
-		j.hooks.OnExit(depth, output, gasUsed, err, reverted)
+		safeHookCall("OnExit", func() { j.hooks.OnExit(depth, output, gasUsed, err, reverted) })
 	}
 }
 
 func (j *journal) OnBalanceChange(addr common.Address, prev, new *big.Int, reason BalanceChangeReason) {
 	j.entries = append(j.entries, balanceChange{addr: addr, prev: prev, new: new})
 	if j.hooks.OnBalanceChange != nil {
-		j.hooks.OnBalanceChange(addr, prev, new, reason)
+		safeHookCall("OnBalanceChange", func() { j.hooks.OnBalanceChange(addr, prev, new, reason) })
 	}
 }
 
@@ -161,9 +176,9 @@ func (j *journal) OnNonceChangeV2(addr common.Address, prev, new uint64, reason 
 		j.entries = append(j.entries, nonceChange{addr: addr, prev: prev, new: new})
 	}
 	if j.hooks.OnNonceChangeV2 != nil {
-		j.hooks.OnNonceChangeV2(addr, prev, new, reason)
+		safeHookCall("OnNonceChangeV2", func() { j.hooks.OnNonceChangeV2(addr, prev, new, reason) })
 	} else if j.hooks.OnNonceChange != nil {
-		j.hooks.OnNonceChange(addr, prev, new)
+		safeHookCall("OnNonceChange", func() { j.hooks.OnNonceChange(addr, prev, new) })
 	}
 }
 
@@ -176,7 +191,7 @@ func (j *journal) OnCodeChange(addr common.Address, prevCodeHash common.Hash, pr
 		newCode:      code,
 	})
 	if j.hooks.OnCodeChange != nil {
-		j.hooks.OnCodeChange(addr, prevCodeHash, prevCode, codeHash, code)
+		safeHookCall("OnCodeChange", func() { j.hooks.OnCodeChange(addr, prevCodeHash, prevCode, codeHash, code) })
 	}
 }
 
@@ -189,14 +204,14 @@ func (j *journal) OnCodeChangeV2(addr common.Address, prevCodeHash common.Hash, 
 		newCode:      code,
 	})
 	if j.hooks.OnCodeChangeV2 != nil {
-		j.hooks.OnCodeChangeV2(addr, prevCodeHash, prevCode, codeHash, code, reason)
+		safeHookCall("OnCodeChangeV2", func() { j.hooks.OnCodeChangeV2(addr, prevCodeHash, prevCode, codeHash, code, reason) })
 	}
 }
 
 func (j *journal) OnStorageChange(addr common.Address, slot common.Hash, prev, new common.Hash) {
 	j.entries = append(j.entries, storageChange{addr: addr, slot: slot, prev: prev, new: new})
 	if j.hooks.OnStorageChange != nil {
-		j.hooks.OnStorageChange(addr, slot, prev, new)
+		safeHookCall("OnStorageChange", func() { j.hooks.OnStorageChange(addr, slot, prev, new) })
 	}
 }
 

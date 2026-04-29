@@ -127,6 +127,13 @@ var (
 	// errNonContiguousHeaderRange is returned when the header range [start,end]
 	// is not contiguous in terms of parent-child relationships.
 	errNonContiguousHeaderRange = errors.New("non-contiguous headers in checkpoint range")
+
+	// errStateSyncTxAborted is the synthetic error passed to a live tracer's
+	// OnTxEnd when Finalize fired OnTxStart for a StateSyncTx but the function
+	// then early-returned without inserting a state-sync receipt (e.g. Heimdall
+	// reported zero events). The tracer's err-cleanup branch then runs instead
+	// of dereferencing the nil receipt that would otherwise be passed.
+	errStateSyncTxAborted = errors.New("state-sync tx tracing aborted: no state-sync events to insert")
 )
 
 // maxAllowedFutureBlockTimeSeconds is the maximum number of seconds that a block
@@ -1213,7 +1220,18 @@ func (c *Bor) Finalize(chain consensus.ChainHeaderReader, header *types.Header, 
 	defer func() {
 		if stateSyncTxStarted && !stateSyncTxEnded {
 			if hooks := vmCfg.Tracer; hooks != nil && hooks.OnTxEnd != nil {
-				hooks.OnTxEnd(nil, err)
+				// If err is nil here, Finalize early-returned successfully on a path
+				// between OnTxStart and the receipt-insertion site (e.g. line 1271
+				// "len(stateSyncData) == 0"). The tracer's OnTxEnd dereferences its
+				// receipt argument when called with err==nil, so we must signal the
+				// abort with a non-nil error to take the tracer's err-cleanup branch.
+				cleanupErr := err
+				if cleanupErr == nil {
+					cleanupErr = errStateSyncTxAborted
+				}
+				log.Debug("bor.Finalize: firing deferred OnTxEnd for StateSyncTx",
+					"path", "defer", "block", header.Number.Uint64(), "err", cleanupErr)
+				hooks.OnTxEnd(nil, cleanupErr)
 			}
 		}
 	}()
